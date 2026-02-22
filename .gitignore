@@ -1,0 +1,23 @@
+# Maven build output
+*.war
+*.ear
+WordLetterCount-1.0-jar-with-dependencies.jar
+target/classes/com/ccgroup8/spark/WordLetterCount.class
+target/maven-archiver/pom.properties
+target/maven-status/maven-compiler-plugin/compile/default-compile/createdFiles.lst
+target/maven-status/maven-compiler-plugin/compile/default-compile/inputFiles.lst
+
+# IntelliJ/Eclipse files
+.idea/
+*.iml
+.classpath
+.factorypath
+.project
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
