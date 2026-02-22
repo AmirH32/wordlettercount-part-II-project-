@@ -1,61 +1,147 @@
 package com.ccgroup8.spark;
 
-import org.apache.spark.api.java.*;
-import org.apache.spark.api.java.function.*;
-import org.apache.spark.sql.Dataset;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.SparkSession;
+import scala.Tuple2;
+
 import java.util.*;
+import java.io.*;
 
 public class WordLetterCount {
-  public static void main(String[] args) {
-    // Ensure that the argument is provided and we don't have extra arguments
-    if (args.length < 1 || args.length > 2) {
-      System.err.println("Usage: WordLetterCount <input_file>");
-      System.exit(1);
-    }
+    private static final String OUTPUT_DIR = "/test-data/CloudComputingCoursework_Group8";
 
-    // Obtain the I/O points
-    String inputFile = args[0];
-    String outputDir = "/test-data/CloudComputingCoursework_Group8";
+    public static void main(String[] args) {
+        String inputFile = parseArgs(args);
 
-    // Create a Spark session
-    SparkSession spark = SparkSession.builder().appName("Word Letter Count").getOrCreate();
+        SparkSession spark = SparkSession.builder()
+            .appName("WordLetterCount")
+            .getOrCreate();
 
-    // Uses the spark session to interact with the file system and read the input
-    // file returning a Dataset<String> where each row is a line from the input file
-    Dataset<String> file_table = spark.read().textFile(inputFile);
-    // Convert to RDD (resilient distributed dataset) to distribute storage across
-    // the cluster allowing for parallel processing and resilience
-    JavaRDD<String> lines = file_table.toJavaRDD();
 
-    // Use flatmap to convert the input line into words by creating a new function
-    // that takes a line input string and returns an iterator of the words in the
-    // line
-    JavaRDD<String> words = lines.flatMap(new FlatMapFunction<String, String>() {
-      // override the FlatMapFunction interface to implement a method used by Spark
-      // called "call" that takes a line and returns an iterator of words
-      @Override
-      public Iterator<String> call(String line) {
-        // Turns the line into lowercase
-        String lower = line.toLowerCase();
+        try (JavaSparkContext sc = new JavaSparkContext(spark.sparkContext())) {
+            JavaRDD<String> lines = sc.textFile(inputFile);
 
-        // Regex to split words using the specification provided
-        String regex = "[\\s,.;:?!\"()\\[\\]{}\\-_]+";
+            List<Tuple2<String, Integer>> wordList = countWords(lines);
+            List<Tuple2<String, Integer>> letterList = countLetters(lines);
 
-        // Split the line into words using the regex to create an array of strings
-        String[] tkns = lower.split(regex);
+            List<String[]> categorisedWords = categorise(wordList);
+            List<String[]> categorisedLetters = categorise(letterList);
 
-        // Convert to a List<String> for easier manipulation
-        List<String> results = new ArrayList<>();
+            new File(OUTPUT_DIR).mkdirs();
+            writeCsv(OUTPUT_DIR + "/words_spark", categorisedWords);
+            writeCsv(OUTPUT_DIR + "/letters_spark", categorisedLetters);
 
-        for (String word : tkns) {
-          results.add(word);
+            sc.stop();
         }
 
-        // Return the iterator for the list
-        return results.iterator();
-      }
-    });
+        spark.stop();
+    }
 
-  }
+    // I changed this to take positional args rather than hardcoded
+    private static String parseArgs(String[] args) {
+        for (int i = 0; i < args.length - 1; i++) {
+            if (args[i].equals("-i")) {
+                return args[i + 1];
+            }
+        }
+        System.err.println("Usage: WordLetterCount -i <input file>");
+        System.exit(1);
+        return null;
+    }
+
+    private static List<Tuple2<String, Integer>> countWords(JavaRDD<String> lines) {
+        JavaPairRDD<String, Integer> wordCounts = lines
+            .flatMap(line -> {
+                // The required split for finding words
+                String[] tokens = line.split("[\\s,\\.;:\\?!\"\\(\\)\\[\\]\\{\\}\\-_]+");
+                List<String> words = new ArrayList<>();
+                for (String token : tokens) {
+                    if (!token.isEmpty() && token.matches("[a-zA-Z]+")) {
+                        words.add(token.toLowerCase());
+                    }
+                }
+                return words.iterator();
+            })
+            .mapToPair(word -> new Tuple2<>(word, 1))
+            .reduceByKey(Integer::sum);
+
+        List<Tuple2<String, Integer>> sorted = new ArrayList<>(wordCounts.collect());
+        sortByFrequencyDesc(sorted);
+        return sorted;
+    }
+
+    private static List<Tuple2<String, Integer>> countLetters(JavaRDD<String> lines) {
+        JavaPairRDD<String, Integer> letterCounts = lines
+            .flatMap(line -> {
+                List<String> letters = new ArrayList<>();
+                for (char c : line.toCharArray()) {
+                    // Since the isCharacter takes accentented chars 
+                    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                        letters.add(String.valueOf(Character.toLowerCase(c)));
+                    }
+                }
+                return letters.iterator();
+            })
+            .mapToPair(letter -> new Tuple2<>(letter, 1))
+            .reduceByKey(Integer::sum);
+
+        List<Tuple2<String, Integer>> sorted = new ArrayList<>(letterCounts.collect());
+        sortByFrequencyDesc(sorted);
+        return sorted;
+    }
+
+    private static void sortByFrequencyDesc(List<Tuple2<String, Integer>> list) {
+        list.sort((a, b) -> {
+            int cmp = Integer.compare(b._2, a._2);
+            if (cmp != 0) return cmp;
+            return a._1.compareTo(b._1);
+        });
+    }
+
+    private static List<String[]> categorise(List<Tuple2<String, Integer>> sortedList) {
+        int n = sortedList.size();
+        int popularEnd = (int) Math.ceil(0.05 * n);
+        int commonLow = (int) Math.floor(0.475 * n);
+        int commonHigh = (int) Math.ceil(0.525 * n);
+        int rareStart = (int) Math.floor(0.95 * n);
+
+        List<String[]> popular = new ArrayList<>();
+        List<String[]> common = new ArrayList<>();
+        List<String[]> rare = new ArrayList<>();
+
+        for (int i = 0; i < n; i++) {
+            Tuple2<String, Integer> entry = sortedList.get(i);
+            int rank = i + 1;
+            String[] row = {String.valueOf(rank), entry._1, null, String.valueOf(entry._2)};
+
+            if (i < popularEnd) {
+                row[2] = "popular";
+                popular.add(row);
+            } else if (i >= commonLow - 1 && i <= commonHigh - 1) {
+                row[2] = "common";
+                common.add(row);
+            } else if (i >= rareStart - 1) {
+                row[2] = "rare";
+                rare.add(row);
+            }
+        }
+
+        List<String[]> result = new ArrayList<>();
+        result.addAll(popular);
+        result.addAll(common);
+        result.addAll(rare);
+        return result;
+    }
+
+    private static void writeCsv(String path, List<String[]> rows) {
+        try (PrintWriter pw = new PrintWriter(new FileWriter(path))) {
+            for (String[] row : rows) {
+                pw.println(row[0] + "," + row[1] + "," + row[2] + "," + row[3]);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
 }
