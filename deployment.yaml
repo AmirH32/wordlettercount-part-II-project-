@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: group-8-ubuntu-volume
+spec:
+  containers:
+  - name: group-8-ubuntu-volume
+    image: ubuntu
+    command: ["/bin/bash", "-c", "sleep infinity"]
+    volumeMounts:
+    - name: nfs-cc-group8
+      mountPath: /test-data
+  volumes:
+  - name: nfs-cc-group8
+    persistentVolumeClaim:
+      claimName: nfs-cc-group8

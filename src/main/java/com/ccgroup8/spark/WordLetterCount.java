@@ -158,7 +158,7 @@ public class WordLetterCount {
     for (int i = 0; i < n; i++) {
       // Get the ith tuple element
       Tuple2<String, Integer> entry = sortedList.get(i);
-      int rank = i + 1;
+      int rank = i;
       // We make a row with the rank, the word, the category and the frequency
       String[] row = { String.valueOf(rank), entry._1, null, String.valueOf(entry._2) };
 
