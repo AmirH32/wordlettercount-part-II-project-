@@ -13,6 +13,7 @@ To run the application:
 3. `kubectl cp <path_to_jar_file>  <pod_name:shared_volume>`
 4. Make sure your spark command points to the jar file in the shared volume
 5. Run the script using: `time ./script.sh k8s://https://128.232.80.18:6443 cc-group8 spark-cc-group8 andylamp/spark:v3.5.4-amd64 nfs-cc-group8 /test-data 2 -i /test-data/data_100MB.txt`. Change the test-data/data_file_path and number of executors (e.g. here it is 2) as needed.
+6. If you would like to run the experiment just run the file `./run-and-plot.sh`, this will put all the measurements in `experiments/<timestamp>/measurements` and `experiments/<timestamp>/graphs`. You can also just run `./run-experiments.sh` if you don't require plots.
 
 ## Accessing the virtual volume
 If you wish to access the virtual volume just run: `kubectl exec -it group-8-ubuntu-volume -- /bin/bash`
