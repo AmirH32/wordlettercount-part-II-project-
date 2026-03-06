@@ -15,10 +15,11 @@ import sys
 import os
 import subprocess
 import time
-import math
 import random
 import json
+import csv
 import numpy as np
+from datetime import datetime
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, ConstantKernel
 from scipy.stats import norm
@@ -31,7 +32,7 @@ SERVICE_ACCOUNT  = "spark-cc-group8"
 IMAGE            = "andylamp/spark:v3.5.4-amd64"
 PVC_NAME         = "nfs-cc-group8"
 MOUNT_PATH       = "/test-data"
-APP_JAR          = f"local:///test-data/WordLetterCount-1.0.jar"
+APP_JAR          = "local:///test-data/WordLetterCount-1.0.jar"
 APP_CLASS        = "com.ccgroup8.spark.WordLetterCount"
 DRIVER_MEM       = "1g"
 MAX_EXECUTORS    = 10 # hard cluster constraint
@@ -41,7 +42,6 @@ MAX_EXECUTORS    = 10 # hard cluster constraint
 
 PARAM_EXECUTOR_INSTANCES = {
     "spark_conf_key": "spark.executor.instances",
-    "cli_flag":       "--num-executors",
     "type":           "int",
     "low":            2,
     "high":           MAX_EXECUTORS,
@@ -49,7 +49,6 @@ PARAM_EXECUTOR_INSTANCES = {
 
 PARAM_EXECUTOR_MEMORY = {
     "spark_conf_key": "spark.executor.memory",
-    "cli_flag":       "--executor-memory",
     "type":           "cat", # Index into the choice list flag
     # stored internally as GB floats
     "choices_gb":     [0.5, 1.0, 2.0, 4.0],
@@ -81,17 +80,15 @@ def encode(instances, mem_index, parallelism):
 
 def decode(x):
     instances   = int(
-        np.clip(round(x[0]), 
+        np.clip(round(x[0]),
             PARAM_EXECUTOR_INSTANCES["low"], PARAM_EXECUTOR_INSTANCES["high"])
     )
-
     mem_index   = int(
-        np.clip(round(x[1]), 
+        np.clip(round(x[1]),
             PARAM_EXECUTOR_MEMORY["low"], PARAM_EXECUTOR_MEMORY["high"])
     )
-
     parallelism = int(
-        np.clip(round(x[2]), 
+        np.clip(round(x[2]),
             PARAM_PARALLELISM["low"], PARAM_PARALLELISM["high"])
     )
     return instances, mem_index, parallelism
@@ -101,15 +98,17 @@ def decode(x):
 # Exploration
 # Formally named : Latin Hypercube Sampling
 #
-# But is really just make a grid of intervals, each split up into points with uniform probability
-# Then each interval is sampled exactly once, and then randomly grouped with a sample
-# from a different dimensions interval.
-# This ensures better coverage, and results according to litterature
+# Each parameter dimension is divided into N equal intervals (where N = number
+# of samples). One point is drawn uniformly at random from within each interval,
+# guaranteeing full coverage of each dimension's range. The per-dimension samples
+# are then randomly paired across dimensions to form complete configurations.
+#
+# This avoids the clustering that can occur with pure random sampling, ensuring
+# the initial runs are spread across the parameter space before the GP takes over.
 
 def latin_hypercube_samples(n):
     """
     Generate `n` parameter configurations using Latin Hypercube Sampling.
-
     Returns a list of (instances, mem_index, parallelism) tuples.
     """
     # Build samples for each dimension in [0, 1]
@@ -119,13 +118,12 @@ def latin_hypercube_samples(n):
         random.shuffle(points)
         return points
 
-    inst_samples  = lhs_1d(n)
-    mem_samples   = lhs_1d(n)
-    par_samples   = lhs_1d(n)
+    inst_samples = lhs_1d(n)
+    mem_samples  = lhs_1d(n)
+    par_samples  = lhs_1d(n)
 
     configs = []
     for i_f, m_f, p_f in zip(inst_samples, mem_samples, par_samples):
-        # Scale from [0,1] to parameter ranges
         instances   = round(PARAM_EXECUTOR_INSTANCES["low"] +
                             i_f * (PARAM_EXECUTOR_INSTANCES["high"] -
                                    PARAM_EXECUTOR_INSTANCES["low"]))
@@ -141,6 +139,7 @@ def latin_hypercube_samples(n):
         configs.append((instances, mem_index, parallelism))
 
     return configs
+
 
 # ========================================================================
 # Gaussian Process surrogate model
@@ -160,9 +159,7 @@ def latin_hypercube_samples(n):
 # This is just Bayesianism covered in the Data Science course.
 
 def build_gp():
-    """
-    Construct the GP regressor.
-    """
+    """Construct the GP regressor"""
     kernel = ConstantKernel(1.0, (1e-3, 1e3)) * Matern(
         length_scale=1.0, length_scale_bounds=(1e-2, 1e2), nu=2.5
     )
@@ -173,31 +170,29 @@ def build_gp():
         n_restarts_optimizer=5,
     )
 
+
 def expected_improvement(candidates, gp, y_best, xi=0.01):
     """
     Compute Expected Improvement
 
-    The GP provides a bellcurve (mu, sig) for each candidate x
-
+    The GP provides a bell curve (mu, sigma) for each candidate x
     If mu is lower than current best we like that.
-    If sig (variance) is high, it means the potential for improvement is there
+    If sigma is high, the potential for improvement is there
 
     xi means that mu which is close to the best is more likely to be chosen if XI is high,
     but because we are low on budget, we keep it low.
 
     EI(x) = E[max(0, y_best - f(x))]
-           = (y_best - mu(x) - xi) · CDF(Z) + sig(x) · PDF(Z)
-    where Z = (y_best - mu(x) - xi) / sig(x)
-
-    Improvement means predicting a value lower than the current best (y_best - mu).
+           = (y_best - mu(x) - xi) · CDF(Z) + sigma(x) · PDF(Z)
+    where Z = (y_best - mu(x) - xi) / sigma(x)
     """
     mu, sigma = gp.predict(candidates, return_std=True)
     sigma = sigma.reshape(-1, 1)
     mu    = mu.reshape(-1, 1)
 
-    z  = (y_best - mu - xi) / (sigma + 1e-9) # avoid division by zero
+    z  = (y_best - mu - xi) / (sigma + 1e-9)  # avoid division by zero
     ei = (y_best - mu - xi) * norm.cdf(z) + sigma * norm.pdf(z)
-    ei[sigma < 1e-10] = 0.0 # no uncertainty => no improvement to expect
+    ei[sigma < 1e-10] = 0.0  # no uncertainty => no improvement to expect
     return ei.flatten()
 
 
@@ -207,12 +202,12 @@ def next_candidate(gp, y_best, n_restarts=200):
     and return the best.
     """
     # Random candidates across the search space
-    inst_cands  = np.random.uniform(PARAM_EXECUTOR_INSTANCES["low"],
-                                    PARAM_EXECUTOR_INSTANCES["high"],  n_restarts)
-    mem_cands   = np.random.uniform(PARAM_EXECUTOR_MEMORY["low"],
-                                    PARAM_EXECUTOR_MEMORY["high"],     n_restarts)
-    par_cands   = np.random.uniform(PARAM_PARALLELISM["low"],
-                                    PARAM_PARALLELISM["high"],         n_restarts)
+    inst_cands = np.random.uniform(PARAM_EXECUTOR_INSTANCES["low"],
+                                   PARAM_EXECUTOR_INSTANCES["high"], n_restarts)
+    mem_cands  = np.random.uniform(PARAM_EXECUTOR_MEMORY["low"],
+                                   PARAM_EXECUTOR_MEMORY["high"],    n_restarts)
+    par_cands  = np.random.uniform(PARAM_PARALLELISM["low"],
+                                   PARAM_PARALLELISM["high"],        n_restarts)
     X_cand = np.column_stack([inst_cands, mem_cands, par_cands])
 
     ei_vals = expected_improvement(X_cand, gp, y_best)
@@ -225,14 +220,14 @@ def next_candidate(gp, y_best, n_restarts=200):
 def run_spark(input_file, instances, mem_str, parallelism):
     """
     Execute WordLetterCount with the given parameter set and return wall-clock
-    execution time in seconds.  Returns None on error.
+    execution time in seconds. Returns None on error.
     """
     cmd = [
         SPARK_SUBMIT,
-        "--master",          MASTER_URL,
-        "--deploy-mode",     "cluster",
-        "--name",            "word-letter-counter",
-        "--class",           APP_CLASS,
+        "--master",      MASTER_URL,
+        "--deploy-mode", "cluster",
+        "--name",        "word-letter-counter",
+        "--class",       APP_CLASS,
         "--conf", f"spark.executor.instances={instances}",
         "--conf", f"spark.executor.memory={mem_str}",
         "--conf", f"spark.default.parallelism={parallelism}",
@@ -261,6 +256,44 @@ def run_spark(input_file, instances, mem_str, parallelism):
 
     return elapsed
 
+
+# ==========================================
+# Output helpers
+
+def write_dynamic_csv(timestamp, input_file, best):
+    """
+    Write all run results to experiments/<timestamp>/dynamic.csv
+    as required by the assignment spec.
+    """
+    exp_dir = os.path.join("experiments", timestamp)
+    os.makedirs(exp_dir, exist_ok=True)
+
+    csv_path = os.path.join(exp_dir, "dynamic.csv")
+    header = ["run", "phase", "spark.executor.instances", "spark.executor.memory",
+              "spark.default.parallelism", "execution_time_s", "is_best"]
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["# Dynamic Parameter Configuration Scheduler"])
+        writer.writerow([f"# Input file   : {input_file}"])
+        writer.writerow([f"# Timestamp    : {timestamp}"])
+        writer.writerow([f"# Total runs   : {len(results_log)}  ({N_INITIAL} LHS + {N_BO} BO)"])
+        writer.writerow([f"# Best config  : instances={best['instances']}  "
+                         f"memory={best['memory']}  parallelism={best['parallelism']}  "
+                         f"time={best['time_s']}s"])
+        writer.writerow([])
+        writer.writerow(header)
+        for r in results_log:
+            is_best = (r["run"] == best["run"])
+            writer.writerow([
+                r["run"], r["phase"], r["instances"], r["memory"],
+                r["parallelism"], r["time_s"], "YES" if is_best else ""
+            ])
+
+    print(f"Results written to {csv_path}")
+    return csv_path
+
+
 # ======================================
 # Main scheduler loop
 def main():
@@ -269,19 +302,22 @@ def main():
         sys.exit(1)
 
     input_file = sys.argv[1]
+    timestamp  = datetime.now().strftime("%Y%m%dT%H%M%S")  # ISO-8601 format
+
     print(f"\n{'='*65}")
     print("Dynamic Parameter Configuration Scheduler")
     print(f"Input file : {input_file}")
+    print(f"Timestamp  : {timestamp}")
     print(f"Budget     : {N_TOTAL} runs  ({N_INITIAL} LHS + {N_BO} Bayesian BO)")
     print(f"Parameters : spark.executor.instances | spark.executor.memory | spark.default.parallelism")
     print(f"{'='*65}\n")
 
-    X_observed = [] # list of encoded np.array vectors
-    y_observed = [] # list of execution times (s)
+    X_observed = []  # list of encoded np.array vectors
+    y_observed = []  # list of execution times (s)
     run_count  = 0
-    
+
     # =================
-    # exploration : LHS
+    # Exploration : LHS
     print(f"Exploration  ({N_INITIAL} LHS samples)")
     initial_configs = latin_hypercube_samples(N_INITIAL)
 
@@ -294,7 +330,7 @@ def main():
         elapsed = run_spark(input_file, instances, mem_str, parallelism)
         if elapsed is None:
             print("  -> Run failed, skipping.")
-            run_count -= 1   # don't count failed runs against budget
+            run_count -= 1
             continue
 
         print(f"  -> Execution time: {elapsed:.2f} s")
@@ -315,17 +351,15 @@ def main():
     for bo_iter in range(N_BO):
         run_count += 1
 
-        # Fit the GP on all observations so far
         X_arr = np.array(X_observed)
         y_arr = np.array(y_observed)
         gp.fit(X_arr, y_arr)
 
-        y_best = np.min(y_arr)
+        y_best   = np.min(y_arr)
         best_idx = np.argmin(y_arr)
         print(f"\n  GP fitted on {len(y_arr)} points.  Current best: "
               f"{y_best:.2f} s  @ run {results_log[best_idx]['run']}")
 
-        # Select next configuration by EI
         instances, mem_index, parallelism = next_candidate(gp, y_best)
         mem_str = PARAM_EXECUTOR_MEMORY["choices_str"][mem_index]
 
@@ -367,11 +401,8 @@ def main():
     print(f"     Execution time             = {best['time_s']} s  (run {best['run']})")
     print(f"{'='*65}")
 
-    # Write results to JSON for later analysis / report
-    out_path = "dynamic_scheduler_results.json"
-    with open(out_path, "w") as f:
-        json.dump({"best": best, "all_runs": results_log}, f, indent=2)
-    print(f"\nFull results saved to {out_path}")
+    # Write experiments/<timestamp>/dynamic.csv
+    write_dynamic_csv(timestamp, input_file, best)
 
 
 if __name__ == "__main__":
