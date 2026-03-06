@@ -24,12 +24,17 @@ from sklearn.gaussian_process.kernels import Matern, ConstantKernel
 from scipy.stats import norm
 
 # constants
-SPARK_SUBMIT  = "spark-submit"
-APP_JAR       = "/home/user/CloudCoursework/target/wordlettercount.jar"
-APP_CLASS     = "com.ccgroup8.spark.WordLetterCount"
-SPARK_MASTER  = "k8s://https://kubernetes.default.svc"
-DRIVER_MEM    = "1g"
-MAX_EXECUTORS = 10        # hard cluster constraint
+SPARK_SUBMIT     = "./spark-3.5.4-bin-hadoop3/bin/spark-submit"
+MASTER_URL       = "k8s://https://128.232.80.18:6443"
+NAMESPACE        = "cc-group8"
+SERVICE_ACCOUNT  = "spark-cc-group8"
+IMAGE            = "andylamp/spark:v3.5.4-amd64"
+PVC_NAME         = "nfs-cc-group8"
+MOUNT_PATH       = "/test-data"
+APP_JAR          = f"local:///test-data/WordLetterCount-1.0.jar"
+APP_CLASS        = "com.ccgroup8.spark.WordLetterCount"
+DRIVER_MEM       = "1g"
+MAX_EXECUTORS    = 10 # hard cluster constraint
 
 # ================================================================================================
 # Parameters which we will search
@@ -217,7 +222,6 @@ def next_candidate(gp, y_best, n_restarts=200):
 
 # ==========================================
 # Spark runner
-
 def run_spark(input_file, instances, mem_str, parallelism):
     """
     Execute WordLetterCount with the given parameter set and return wall-clock
@@ -225,15 +229,22 @@ def run_spark(input_file, instances, mem_str, parallelism):
     """
     cmd = [
         SPARK_SUBMIT,
-        "--master",           SPARK_MASTER,
-        "--deploy-mode",      "cluster",
-        "--class",            APP_CLASS,
-        "--num-executors",    str(instances),
-        "--executor-memory",  mem_str,
-        "--driver-memory",    DRIVER_MEM,
+        "--master",          MASTER_URL,
+        "--deploy-mode",     "cluster",
+        "--name",            "word-letter-counter",
+        "--class",           APP_CLASS,
         "--conf", f"spark.executor.instances={instances}",
         "--conf", f"spark.executor.memory={mem_str}",
         "--conf", f"spark.default.parallelism={parallelism}",
+        "--conf", f"spark.kubernetes.namespace={NAMESPACE}",
+        "--conf", f"spark.kubernetes.authenticate.driver.serviceAccountName={SERVICE_ACCOUNT}",
+        "--conf", f"spark.kubernetes.container.image={IMAGE}",
+        "--conf", f"spark.kubernetes.driver.volumes.persistentVolumeClaim.{PVC_NAME}.mount.path={MOUNT_PATH}",
+        "--conf", f"spark.kubernetes.driver.volumes.persistentVolumeClaim.{PVC_NAME}.mount.readOnly=false",
+        "--conf", f"spark.kubernetes.driver.volumes.persistentVolumeClaim.{PVC_NAME}.options.claimName={PVC_NAME}",
+        "--conf", f"spark.kubernetes.executor.volumes.persistentVolumeClaim.{PVC_NAME}.mount.path={MOUNT_PATH}",
+        "--conf", f"spark.kubernetes.executor.volumes.persistentVolumeClaim.{PVC_NAME}.mount.readOnly=false",
+        "--conf", f"spark.kubernetes.executor.volumes.persistentVolumeClaim.{PVC_NAME}.options.claimName={PVC_NAME}",
         APP_JAR,
         "-i", input_file,
     ]
@@ -249,7 +260,6 @@ def run_spark(input_file, instances, mem_str, parallelism):
         return None
 
     return elapsed
-
 
 # ======================================
 # Main scheduler loop
