@@ -317,6 +317,7 @@ def run_spark(input_file, instances, mem_str, parallelism):
         print(result.stderr.decode()[-500:])
         return None
 
+    # Returns elapsed time
     return elapsed
 
 
@@ -333,6 +334,7 @@ def write_dynamic_csv(timestamp, input_file, best):
     exp_dir = os.path.join("experiments", timestamp)
     os.makedirs(exp_dir, exist_ok=True)
 
+    # creates the dynamic csv
     csv_path = os.path.join(exp_dir, "dynamic.csv")
     header = [
         "run",
@@ -345,6 +347,7 @@ def write_dynamic_csv(timestamp, input_file, best):
     ]
 
     with open(csv_path, "w", newline="") as f:
+        # Comments for the reader of the CSV file
         writer = csv.writer(f)
         writer.writerow(["# Dynamic Parameter Configuration Scheduler"])
         writer.writerow([f"# Input file   : {input_file}"])
@@ -360,6 +363,7 @@ def write_dynamic_csv(timestamp, input_file, best):
             ]
         )
         writer.writerow([])
+        # Write the header and results for each of the results from actual runs
         writer.writerow(header)
         for r in results_log:
             is_best = r["run"] == best["run"]
@@ -408,23 +412,28 @@ def main():
     # =================
     # Exploration : LHS
     print(f"Exploration  ({N_INITIAL} LHS samples)")
+    # Create well-distributed random configuration samples across parameter space to explore broadly before we have a surrogate model to guide us. This is better than pure random sampling which can cluster and miss regions of the space.
     initial_configs = latin_hypercube_samples(N_INITIAL)
 
     for instances, mem_index, parallelism in initial_configs:
         run_count += 1
+        # gets the string associated the memory index
         mem_str = PARAM_EXECUTOR_MEMORY["choices_str"][mem_index]
         print(
             f"\n[Run {run_count}/{N_TOTAL}]  instances={instances}  "
             f"memory={mem_str}  parallelism={parallelism}"
         )
 
+        # runs the job with the random configuration
         elapsed = run_spark(input_file, instances, mem_str, parallelism)
         if elapsed is None:
+            # If we fail to get a time, we skip the point and remove the run
             print("  -> Run failed, skipping.")
             run_count -= 1
             continue
 
         print(f"  -> Execution time: {elapsed:.2f} s")
+        # We add our configuration and observed time
         X_observed.append(encode(instances, mem_index, parallelism))
         y_observed.append(elapsed)
         results_log.append(
@@ -447,10 +456,12 @@ def main():
     for bo_iter in range(N_BO):
         run_count += 1
 
+        # Use our training set from LHS to fit our GP surrogate model
         X_arr = np.array(X_observed)
         y_arr = np.array(y_observed)
         gp.fit(X_arr, y_arr)
 
+        # Find our best time (current best configuration) and best index
         y_best = np.min(y_arr)
         best_idx = np.argmin(y_arr)
         print(
@@ -458,6 +469,7 @@ def main():
             f"{y_best:.2f} s  @ run {results_log[best_idx]['run']}"
         )
 
+        # Run 200 random candidates and predict the time for each using GP. The candidate with the highest expected improvement (EI) is selected for the next run. This balances exploitation (choosing points predicted to be good) and exploration (choosing points with high uncertainty that could be better than our current best).
         instances, mem_index, parallelism = next_candidate(gp, y_best)
         mem_str = PARAM_EXECUTOR_MEMORY["choices_str"][mem_index]
 
@@ -472,6 +484,7 @@ def main():
             run_count -= 1
             continue
 
+        # Run the candidate and add the observed results to our training set for the next iteration GP to be better fitted
         print(f"  -> Execution time: {elapsed:.2f} s")
         X_observed.append(encode(instances, mem_index, parallelism))
         y_observed.append(elapsed)
@@ -502,6 +515,7 @@ def main():
             f"{r['memory']:<10} {r['parallelism']:<14} {r['time_s']:<10}"
         )
 
+    # Find the configuration with the best time in our results.log
     best = min(results_log, key=lambda r: r["time_s"])
     print(f"\nBest configuration found:")
     print(f"spark.executor.instances   = {best['instances']}")
