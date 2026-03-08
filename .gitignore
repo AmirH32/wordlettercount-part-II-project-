@@ -9,6 +9,7 @@ target/maven-status/maven-compiler-plugin/compile/default-compile/inputFiles.lst
 
 # Schedulers
 schedulers/static_allocation_scheduler.py
+schedulers/static.csv
 
 # IntelliJ/Eclipse files
 .idea/
