@@ -1,0 +1,4 @@
+timestamp, Input_File_in_MB, predicted_no_ex, predicted_ex_time, assigned_no_ex, measured_ex_time
+2026-03-08T20:18:59+00:00, 100.0, 4, 32.44, 4, 31.73
+2026-03-08T20:19:35+00:00, 200.0, 5, 36.65, 5, 38.79
+2026-03-08T20:20:20+00:00, 500.0, 8, 43.69, 8, 42.27

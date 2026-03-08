@@ -79,6 +79,7 @@ def encode(instances, mem_index, parallelism):
 
 
 def decode(x):
+    # Round and force clipping to ensure we stay within valid executor bounds
     instances = int(
         np.clip(
             round(x[0]),
@@ -86,6 +87,7 @@ def decode(x):
             PARAM_EXECUTOR_INSTANCES["high"],
         )
     )
+
     mem_index = int(
         np.clip(
             round(x[1]), PARAM_EXECUTOR_MEMORY["low"], PARAM_EXECUTOR_MEMORY["high"]
@@ -118,8 +120,10 @@ def latin_hypercube_samples(n):
 
     # Build samples for each dimension in [0, 1]
     def lhs_1d(n):
+        # puts the parameter values between 0 and 1 and then splits into equal bins, then picks random number from each bin
         cuts = np.linspace(0, 1, n + 1)
         points = [random.uniform(cuts[i], cuts[i + 1]) for i in range(n)]
+        # Shuffle order so small value for one parameter doesn't always pair with small value of another
         random.shuffle(points)
         return points
 
@@ -128,6 +132,9 @@ def latin_hypercube_samples(n):
     par_samples = lhs_1d(n)
 
     configs = []
+    # Use zip to pair these random but well-distributed samples across parameter dimensions
+    # Loop converts the value between 0 and 1 back into the actual parameter value in bounds
+    # Clip is cleanup to ensure we stay in bounds
     for i_f, m_f, p_f in zip(inst_samples, mem_samples, par_samples):
         instances = round(
             PARAM_EXECUTOR_INSTANCES["low"]
@@ -154,6 +161,7 @@ def latin_hypercube_samples(n):
         parallelism = int(
             np.clip(parallelism, PARAM_PARALLELISM["low"], PARAM_PARALLELISM["high"])
         )
+        # Append the n different well-distributed random configurations to configs
         configs.append((instances, mem_index, parallelism))
 
     return configs
@@ -179,9 +187,13 @@ def latin_hypercube_samples(n):
 
 def build_gp():
     """Construct the GP regressor"""
+    # Normalise the execution time to help GP model, length is how far to move in parameter space before we expect the function to change significantly, nu controls smoothness of the function (2.5 is a good default for many problems) to prevent overfitting to points (wigliness)
+    # Matern finds the difference between two points and constant kernel is scaling factor to allow us to reason about large differences
     kernel = ConstantKernel(1.0, (1e-3, 1e3)) * Matern(
         length_scale=1.0, length_scale_bounds=(1e-2, 1e2), nu=2.5
     )
+    # Kernel is shape of function, alpha assumes error/noise to prevent chasing tiny fluctuations. Normalise y fixes problem that X values are small (instance 2-10 but Y-value execution time is large e.g. 100 seconds)
+    # n_rester_optimizer is how many times to try different initial hyperparameters when fitting the GP to avoid local minima in the hyperparameter space. This is important because the GP's performance can be sensitive to its hyperparameters, and a poor choice can lead to a bad surrogate model.
     return GaussianProcessRegressor(
         kernel=kernel,
         alpha=1e-4,  # small noise term for numerical stability
@@ -190,6 +202,7 @@ def build_gp():
     )
 
 
+# We want exploitation, choosing point with predicted fast time and exploration (wild) a point with high uncertainty which can have massive performance breakthrough.
 def expected_improvement(candidates, gp, y_best, xi=0.01):
     """
     Compute Expected Improvement
@@ -206,15 +219,19 @@ def expected_improvement(candidates, gp, y_best, xi=0.01):
     where Z = (y_best - mu(x) - xi) / sigma(x)
     """
     mu, sigma = gp.predict(candidates, return_std=True)
+    # Converts from 1D array to 2D array
     sigma = sigma.reshape(-1, 1)
     mu = mu.reshape(-1, 1)
 
     z = (y_best - mu - xi) / (sigma + 1e-9)  # avoid division by zero
+    # Combine exploitation and exploration terms
     ei = (y_best - mu - xi) * norm.cdf(z) + sigma * norm.pdf(z)
+    # Since we didn't divide by 0 but nearly did we find every point that is close to 0 and just turn to 0
     ei[sigma < 1e-10] = 0.0  # no uncertainty => no improvement to expect
     return ei.flatten()
 
 
+# Create 200 random potential configuration between low and high limits
 def next_candidate(gp, y_best, n_restarts=200):
     """
     Draw `n_restarts` random candidates, evaluate EI for all of them,
@@ -230,10 +247,14 @@ def next_candidate(gp, y_best, n_restarts=200):
     par_cands = np.random.uniform(
         PARAM_PARALLELISM["low"], PARAM_PARALLELISM["high"], n_restarts
     )
+    # Stacks the lists into matrix, each row is a configuration
     X_cand = np.column_stack([inst_cands, mem_cands, par_cands])
 
+    # Y best is the best time we have seen so far, we want to find a point that has high expected improvement over that best time
     ei_vals = expected_improvement(X_cand, gp, y_best)
+    # Find the X with highest expected improvement score
     best_x = X_cand[np.argmax(ei_vals)]
+    # decode from continuous back to discrete
     return decode(best_x)
 
 
@@ -278,12 +299,15 @@ def run_spark(input_file, instances, mem_str, parallelism):
         f"spark.kubernetes.executor.volumes.persistentVolumeClaim.{PVC_NAME}.mount.readOnly=false",
         "--conf",
         f"spark.kubernetes.executor.volumes.persistentVolumeClaim.{PVC_NAME}.options.claimName={PVC_NAME}",
+        "--conf",
+        "spark.kubernetes.submission.waitAppCompletion=true",
         APP_JAR,
         "-i",
         input_file,
     ]
 
     print("  CMD: " + " ".join(cmd))
+    # Time the time taken for the program to run
     t_start = time.time()
     result = subprocess.run(cmd, capture_output=True)
     elapsed = time.time() - t_start
@@ -305,6 +329,7 @@ def write_dynamic_csv(timestamp, input_file, best):
     Write all run results to experiments/<timestamp>/dynamic.csv
     as required by the assignment spec.
     """
+    # Make the experiments directory if it doesn't exist and then a subdirectory with the timestamp
     exp_dir = os.path.join("experiments", timestamp)
     os.makedirs(exp_dir, exist_ok=True)
 
@@ -478,11 +503,11 @@ def main():
         )
 
     best = min(results_log, key=lambda r: r["time_s"])
-    print(f"\n★  Best configuration found:")
-    print(f"     spark.executor.instances   = {best['instances']}")
-    print(f"     spark.executor.memory      = {best['memory']}")
-    print(f"     spark.default.parallelism  = {best['parallelism']}")
-    print(f"     Execution time             = {best['time_s']} s  (run {best['run']})")
+    print(f"\nBest configuration found:")
+    print(f"spark.executor.instances   = {best['instances']}")
+    print(f"spark.executor.memory      = {best['memory']}")
+    print(f"spark.default.parallelism  = {best['parallelism']}")
+    print(f"Execution time             = {best['time_s']} s  (run {best['run']})")
     print(f"{'=' * 65}")
 
     # Write experiments/<timestamp>/dynamic.csv
