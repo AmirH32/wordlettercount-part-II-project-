@@ -75,29 +75,36 @@ for input_file in "${files[@]}"; do
 
       printf "%s %.10g %.10g\n", worker, mean, stddev
     }
-  ' "$input_file" > "$summary_file"
+  ' "$input_file" >"$summary_file"
 
   gnuplot <<EOF
-set terminal pdfcairo enhanced color font "Helvetica,10"
+set terminal pdfcairo enhanced color font "helvetica,10"
 set output "$output_file"
 set key top right
 set grid
-set title "$plot_title (Mean with Std Dev)"
+set title "$plot_title (mean with std dev)"
 set xlabel "$x_label"
 set ylabel "$y_label"
 set style fill solid 0.85 border rgb "#2f4b7c"
-set boxwidth 0.9
-bar_width = 0.9
+
+# pad the edges so the bars don't touch the sides of the graph
+set xrange [-0.75:2.75]
+
+# narrow the bars slightly since they are now right next to each other
+bar_width = 0.5
+set boxwidth bar_width
 half_bar = bar_width / 2.0
 stddev_color = "#d62728"
-plot "$summary_file" using 1:2 with boxes lc rgb "#4c78a8" title "Mean", \
-     "$summary_file" using (\$1-half_bar):(\$2+\$3):(bar_width):(0) with vectors nohead lc rgb stddev_color lw 1.2 dashtype 2 title "Std Dev", \
-     "$summary_file" using (\$1-half_bar):(\$2-\$3):(bar_width):(0) with vectors nohead lc rgb stddev_color lw 1.2 dashtype 2 notitle, \
-     "$summary_file" using (\$1-half_bar):(\$2):(0):(\$3) with vectors nohead lc rgb stddev_color lw 1.0 notitle, \
-     "$summary_file" using (\$1+half_bar):(\$2):(0):(\$3) with vectors nohead lc rgb stddev_color lw 1.0 notitle
+
+# Plot using \$0 (row index) instead of \$1 (continuous number line)
+# xtic(1) forces it to use the exact text from column 1 as the label
+plot "$summary_file" using 0:2:xtic(1) with boxes lc rgb "#4c78a8" title "Mean", \
+     "$summary_file" using (\$0-half_bar):(\$2+\$3):(bar_width):(0) with vectors nohead lc rgb stddev_color lw 1.2 dashtype 2 title "Std Dev", \
+     "$summary_file" using (\$0-half_bar):(\$2-\$3):(bar_width):(0) with vectors nohead lc rgb stddev_color lw 1.2 dashtype 2 notitle, \
+     "$summary_file" using (\$0-half_bar):(\$2):(0):(\$3) with vectors nohead lc rgb stddev_color lw 1.0 notitle, \
+     "$summary_file" using (\$0+half_bar):(\$2):(0):(\$3) with vectors nohead lc rgb stddev_color lw 1.0 notitle
 EOF
 
   rm -f "$summary_file"
   echo "Created $output_file"
 done
-

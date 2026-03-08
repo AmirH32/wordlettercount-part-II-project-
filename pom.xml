@@ -16,21 +16,16 @@
     </properties>
 
     <dependencies>
-        <!-- Spark Core -->
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-core_2.12</artifactId>
             <version>3.5.4</version>
         </dependency>
-
-        <!-- Spark SQL -->
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_2.12</artifactId>
             <version>3.5.4</version>
         </dependency>
-
-        <!-- Optional: Simple Logging for Spark -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
@@ -40,7 +35,6 @@
 
     <build>
         <plugins>
-            <!-- Compiler plugin to use Java 17 -->
             <plugin>
               <groupId>org.apache.maven.plugins</groupId>
               <artifactId>maven-compiler-plugin</artifactId>
@@ -49,8 +43,6 @@
                   <release>17</release>
               </configuration>
             </plugin>
-
-            <!-- Assembly plugin to build JAR with dependencies -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-assembly-plugin</artifactId>
